@@ -11,6 +11,33 @@ output() {
 EOF
 }
 
+getValueFromJSON() {
+	json_str="$1"
+	key_path="$2"
+	value=$(osascript -l JavaScript -  "$json_str" "$key_path"  <<EOF
+		function run(input){
+			let jsonStr = input[0];
+			let keyPath = input[1];
+			let bracketedKeys = '';
+			let plist = JSON.parse(jsonStr);
+			let current = plist;
+			
+			keys = keyPath.split('.');
+			for (let i = 0; i < keys.length; i++) {
+				let key = keys[i];
+				try {
+					current = current[key];
+				} catch(e) {
+					return 'Key "' + key + '" not found'
+					break;
+				}
+			}
+			return current;
+		}
+EOF)
+	echo "$value"
+}
+
 unmount() {
 	backup_succeeded=$1
 	backup_status_message=$2
@@ -41,6 +68,10 @@ unmount() {
 backup_drive=$(tmutil destinationinfo | sed -rn 's/(Name +\: )//p')
 tm_timeout=120
 
+
+# Convert saved time to a Unix timestamp
+start_timestamp=$(date +%s)
+
 drive_info=$(diskutil info "$backup_drive" 2>&1 > /dev/null)
 if [[ $drive_info = "Could not find disk: $backup_drive" ]];
 	then
@@ -68,12 +99,47 @@ tm_stopped=false
 # Wait until Time Machine is no long running, then unmount.
 while [ $(tmutil currentphase) != 'BackupNotRunning' ]; 
 	do 
+	tm_status_json=$(tmutil status | sed 's/Backup session status://g' | plutil -convert json - -o - )
+	backup_phase=$(getValueFromJSON "$tm_status_json" "BackupPhase")
+	percent=$(getValueFromJSON "$tm_status_json" "Progress.Percent")
+	
+	if [[ $percent = 'Key "Percent" not found' ]];
+		then
+		percent="0"
+	fi
+	
+	current_timestamp=$(date +%s)
+	
+	# Calculate the difference in seconds
+	time_difference=$((current_timestamp - start_timestamp))
+	
+	# Convert the difference to hours:minutes:seconds
+	hours="$((time_difference / 3600))"
+	
+	if [[ ${#hours} = 1 ]];
+		then
+		hours="0$hours"
+	fi
+	minutes="$(((time_difference % 3600) / 60))"
+	if [[ ${#minutes} = 1 ]];
+		then
+		minutes="0$minutes"
+	fi
+	seconds="$((time_difference % 60))"
+		if [[ ${#seconds} = 1 ]];
+		then
+		seconds="0$seconds"
+	fi
+	echo "-----------------------------------------"
+	echo "Waiting for backup to complete."
+	echo "Time Elapsed: $hours:$minutes:$seconds"
+	echo "Backup Phase: $backup_phase"
+	echo "Percent: $percent"
 	if [[ $(tmutil currentphase) = 'Stopping' ]];
 		then
 		tm_stopped=true
 		break
 	fi
-	echo 'Waiting for backup to complete.'
 	sleep 10
 done;
 
